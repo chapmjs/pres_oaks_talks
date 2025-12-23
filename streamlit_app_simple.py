@@ -19,6 +19,24 @@ import time
 import os
 import json
 
+# Try to import demo data
+try:
+    from demo_data import DEMO_TALKS, get_demo_talks, get_combined_demo_text
+    demo_data_available = True
+except ImportError:
+    demo_data_available = False
+    # Fallback demo data if import fails
+    DEMO_TALKS = [
+        {
+            'title': 'Demo Talk: Faith and Trust',
+            'content': 'Faith is the foundation of our spiritual lives. We must trust in the Lord. ' * 100
+        },
+        {
+            'title': 'Demo Talk: Family and Love', 
+            'content': 'Families are central to God plan. Love brings happiness. ' * 100
+        }
+    ]
+
 # Page config
 st.set_page_config(
     page_title="Oaks Talk Analysis",
@@ -114,47 +132,119 @@ def generate_wordcloud_simple(text, title="Word Cloud"):
 def fetch_sample_talks():
     """Fetch a sample of talks from bencrowder.net"""
     url = "https://bencrowder.net/collected-talks/dallin-h-oaks/"
-    headers = {'User-Agent': 'Mozilla/5.0'}
+    headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'}
     
     try:
-        response = requests.get(url, headers=headers, timeout=10)
+        response = requests.get(url, headers=headers, timeout=15)
+        response.raise_for_status()
         soup = BeautifulSoup(response.content, 'html.parser')
         
         talks = []
-        content_div = soup.find('div', class_='entry-content') or soup.find('article')
+        
+        # Try multiple possible content containers
+        content_div = soup.find('div', class_='entry-content')
+        if not content_div:
+            content_div = soup.find('article')
+        if not content_div:
+            content_div = soup.find('main')
+        if not content_div:
+            content_div = soup.find('div', id='content')
         
         if content_div:
-            links = content_div.find_all('a')
-            for link in links[:20]:  # Limit to 20 for demo
+            # Find all links
+            all_links = content_div.find_all('a', href=True)
+            
+            for link in all_links:
                 href = link.get('href', '')
-                if href and ('churchofjesuschrist.org' in href or 'speeches.byu.edu' in href):
-                    talks.append({
-                        'title': link.get_text(strip=True),
-                        'url': href
-                    })
-        return talks
-    except:
+                text = link.get_text(strip=True)
+                
+                # Check for talk URLs (church sites and BYU)
+                if any(domain in href for domain in ['churchofjesuschrist.org', 'speeches.byu.edu', 'lds.org']):
+                    # Skip if it's just a domain link without specific content
+                    if not href.endswith('/') and len(text) > 10:
+                        talks.append({
+                            'title': text,
+                            'url': href
+                        })
+        
+        # Remove duplicates based on URL
+        seen_urls = set()
+        unique_talks = []
+        for talk in talks:
+            if talk['url'] not in seen_urls:
+                seen_urls.add(talk['url'])
+                unique_talks.append(talk)
+        
+        return unique_talks[:30]  # Return up to 30 talks
+        
+    except requests.exceptions.RequestException as e:
+        st.error(f"Error fetching talk list: {str(e)}")
+        return []
+    except Exception as e:
+        st.error(f"Unexpected error: {str(e)}")
         return []
 
 def download_talk_content(url):
     """Download content from a talk URL"""
-    headers = {'User-Agent': 'Mozilla/5.0'}
+    headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'}
     
     try:
-        response = requests.get(url, headers=headers, timeout=10)
+        # Add timeout and better error handling
+        response = requests.get(url, headers=headers, timeout=15, allow_redirects=True)
+        response.raise_for_status()
         soup = BeautifulSoup(response.content, 'html.parser')
         
-        # Try to find content
-        article = soup.find('article') or soup.find('div', class_='body-block') or soup.find('main')
+        # Different selectors for different sites
+        article = None
         
+        # Church website selectors
+        if 'churchofjesuschrist.org' in url:
+            article = soup.find('article')
+            if not article:
+                article = soup.find('div', class_='body-block')
+            if not article:
+                article = soup.find('div', id='content')
+            if not article:
+                article = soup.find('section', class_='article-content')
+        
+        # BYU speeches selectors
+        elif 'speeches.byu.edu' in url:
+            article = soup.find('div', class_='transcript')
+            if not article:
+                article = soup.find('div', class_='speech-text')
+            if not article:
+                article = soup.find('article')
+            if not article:
+                article = soup.find('div', class_='content')
+        
+        # Generic fallback
+        if not article:
+            article = soup.find('main')
+            if not article:
+                article = soup.find('article')
+                
         if article:
-            for element in article(['script', 'style', 'nav', 'header', 'footer']):
+            # Remove unwanted elements
+            for element in article(['script', 'style', 'nav', 'header', 'footer', 'aside']):
                 element.decompose()
             
+            # Get text
             text = article.get_text(separator=' ', strip=True)
-            return re.sub(r'\s+', ' ', text)
-    except:
-        pass
+            
+            # Clean up the text
+            text = re.sub(r'\s+', ' ', text)
+            text = re.sub(r'\n+', ' ', text)
+            
+            # Only return if we have substantial content
+            if len(text) > 500:
+                return text
+                
+    except requests.exceptions.Timeout:
+        st.warning(f"Timeout loading: {url[:50]}...")
+    except requests.exceptions.RequestException as e:
+        st.warning(f"Error loading talk: {str(e)[:50]}")
+    except Exception as e:
+        st.warning(f"Unexpected error: {str(e)[:50]}")
     
     return None
 
@@ -183,33 +273,85 @@ with st.sidebar:
     
     # Load sample data button
     if st.button("🔄 Load Sample Talks", type="primary"):
-        with st.spinner("Fetching talks..."):
+        with st.spinner("Fetching talk list from bencrowder.net..."):
             talks = fetch_sample_talks()
             
             if talks:
-                progress_bar = st.progress(0)
-                successful = 0
+                st.success(f"Found {len(talks)} talks!")
                 
-                for i, talk in enumerate(talks[:10]):  # Limit to 10 for speed
-                    content = download_talk_content(talk['url'])
-                    if content:
-                        st.session_state.talks_data.append({
-                            'title': talk['title'],
-                            'content': content
-                        })
-                        successful += 1
+                # Let user choose how many to load
+                num_to_load = st.slider("How many talks to load?", 1, min(len(talks), 20), 5)
+                
+                if st.button(f"Download {num_to_load} Talks"):
+                    progress_bar = st.progress(0)
+                    status_text = st.empty()
+                    successful = 0
+                    failed = 0
                     
-                    progress_bar.progress((i + 1) / min(len(talks), 10))
-                    time.sleep(1)  # Rate limiting
+                    for i, talk in enumerate(talks[:num_to_load]):
+                        status_text.text(f"Loading: {talk['title'][:40]}...")
+                        content = download_talk_content(talk['url'])
+                        
+                        if content:
+                            st.session_state.talks_data.append({
+                                'title': talk['title'],
+                                'content': content
+                            })
+                            successful += 1
+                        else:
+                            failed += 1
+                        
+                        progress_bar.progress((i + 1) / num_to_load)
+                        time.sleep(0.5)  # Rate limiting
+                    
+                    # Combine all text
+                    if st.session_state.talks_data:
+                        st.session_state.all_text = ' '.join([t['content'] for t in st.session_state.talks_data])
+                    
+                    status_text.empty()
+                    progress_bar.empty()
+                    
+                    if successful > 0:
+                        st.success(f"✅ Loaded {successful} talks successfully!")
+                        if failed > 0:
+                            st.warning(f"⚠️ {failed} talks failed to load")
+                        st.rerun()
+                    else:
+                        st.error("Failed to load any talks. Try again or use demo data.")
+            else:
+                st.error("Could not fetch talk list. Check your internet connection.")
                 
-                # Combine all text
+                # Offer demo data as fallback
+                st.info("💡 Try loading demo data instead!")
+                
+    # Demo data button (always visible)
+    if st.button("📚 Load Demo Data", type="secondary"):
+        # Load comprehensive demo talks
+        st.session_state.talks_data = DEMO_TALKS
+        st.session_state.all_text = ' '.join([t['content'] for t in DEMO_TALKS])
+        st.success(f"Loaded {len(DEMO_TALKS)} demo talks for testing!")
+        st.info("These are excerpts from real talks for demonstration purposes.")
+        st.rerun()
+    
+    # Manual text input option
+    with st.expander("➕ Add Talk Manually"):
+        manual_title = st.text_input("Talk Title")
+        manual_content = st.text_area("Talk Content", height=200)
+        
+        if st.button("Add Manual Talk"):
+            if manual_title and manual_content:
+                st.session_state.talks_data.append({
+                    'title': manual_title,
+                    'content': manual_content
+                })
                 st.session_state.all_text = ' '.join([t['content'] for t in st.session_state.talks_data])
-                
-                st.success(f"Loaded {successful} talks!")
+                st.success(f"Added '{manual_title}'!")
                 st.rerun()
+            else:
+                st.error("Please provide both title and content")
     
     # Clear data button
-    if st.button("🗑️ Clear Data"):
+    if st.button("🗑️ Clear All Data"):
         st.session_state.talks_data = []
         st.session_state.all_text = ""
         st.rerun()
@@ -241,14 +383,36 @@ with tab1:
         st.subheader("Loaded Talks")
         
         talks_df = pd.DataFrame([
-            {'Title': t['title'], 'Word Count': len(t['content'].split())}
+            {'Title': t['title'][:60], 'Word Count': len(t['content'].split())}
             for t in st.session_state.talks_data
         ])
         
-        st.dataframe(talks_df, use_container_width=True)
+        st.dataframe(talks_df, use_container_width=True, hide_index=True)
+        
+        # Show sample content
+        with st.expander("View Sample Content"):
+            if st.session_state.talks_data:
+                sample_talk = st.session_state.talks_data[0]
+                st.write(f"**{sample_talk['title']}**")
+                st.write(sample_talk['content'][:500] + "...")
         
     else:
         st.info("👈 Click 'Load Sample Talks' in the sidebar to get started!")
+        
+        # Quick instructions
+        st.markdown("""
+        ### Getting Started:
+        
+        1. **Load Talks** - Click the button in the sidebar to fetch talks
+        2. **Generate Word Clouds** - Visualize the most common words
+        3. **Search Themes** - Find specific concepts across all talks
+        4. **Analyze Frequencies** - See statistical word analysis
+        
+        ### Alternative Options:
+        - **Demo Data** - If loading fails, use the demo data option
+        - **Manual Entry** - Add talks manually using the sidebar expander
+        - **Custom Themes** - Search for any word or phrase once talks are loaded
+        """)
 
 with tab2:
     st.header("Word Cloud Generator")
