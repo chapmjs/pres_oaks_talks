@@ -125,7 +125,7 @@ def init_database_schema(pool):
             CREATE TABLE IF NOT EXISTS talks (
                 id INT AUTO_INCREMENT PRIMARY KEY,
                 title VARCHAR(500) NOT NULL,
-                url VARCHAR(1000) UNIQUE,
+                url VARCHAR(512) UNIQUE,
                 talk_type VARCHAR(100),
                 date VARCHAR(100),
                 year INT,
