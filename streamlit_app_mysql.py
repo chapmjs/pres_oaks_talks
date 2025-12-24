@@ -977,7 +977,6 @@ elif page == "🔄 Update Corpus":
         st.subheader("Fetch New Talks from bencrowder.net")
         
         if st.button("Check for New Talks", type="primary"):
-            st.write(new_talks)
             fetcher = TalkFetcher(pool)
             
             with st.spinner("Checking for new talks..."):
